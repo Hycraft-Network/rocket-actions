@@ -1,0 +1,72 @@
+name: 'Upload JAR to Rocket API'
+description: 'Downloads a GitHub artifact and uploads the JAR to Rocket API via simple PUT. Must run on a self-hosted runner.'
+
+inputs:
+  artifact-name:
+    description: 'Name of the GitHub artifact containing the JAR'
+    required: true
+  jar-filename:
+    description: 'Filename of the JAR inside the artifact (e.g. HyMinigames.jar)'
+    required: true
+  namespace:
+    description: 'Rocket Vortex namespace (e.g. plugins)'
+    required: false
+    default: 'plugins'
+  rocket-api-key:
+    description: 'Rocket API key for authentication'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Download artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ./artifact
+
+    - name: Find JAR file
+      shell: bash
+      run: |
+        JAR_PATH=$(find ./artifact -name "${{ inputs.jar-filename }}" | head -1)
+        if [ -z "$JAR_PATH" ]; then
+          echo "::error::JAR not found: ${{ inputs.jar-filename }}"
+          find ./artifact -type f
+          exit 1
+        fi
+        echo "JAR_PATH=$JAR_PATH" >> $GITHUB_ENV
+
+    - name: Health check Rocket API
+      shell: bash
+      run: |
+        status=$(curl --silent --output /dev/null --write-out "%{http_code}" "https://rocket.hycraft.us/v1/health")
+        if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+          echo "::error::Rocket API health check failed (status: $status)"
+          exit 1
+        fi
+        echo "Rocket API healthy (status: $status)"
+
+    - name: Upload to Rocket API
+      shell: bash
+      env:
+        ROCKET_API_KEY: ${{ inputs.rocket-api-key }}
+      run: |
+        FILENAME="${{ inputs.jar-filename }}"
+        NAMESPACE="${{ inputs.namespace }}"
+        API_URL="https://rocket.hycraft.us/v1/vortex/${NAMESPACE}/${FILENAME}"
+
+        echo "Uploading ${FILENAME} to ${API_URL} ..."
+        HTTP_STATUS=$(curl -sS -o /tmp/rocket_response.json -w "%{http_code}" \
+          --upload-file "$JAR_PATH" \
+          -H "Authorization: Bearer ${ROCKET_API_KEY}" \
+          -H "Content-Type: application/octet-stream" \
+          "${API_URL}")
+
+        echo "HTTP status: ${HTTP_STATUS}"
+        cat /tmp/rocket_response.json
+
+        if [ "${HTTP_STATUS}" -lt 200 ] || [ "${HTTP_STATUS}" -ge 300 ]; then
+          echo "::error::Upload failed with HTTP status ${HTTP_STATUS}"
+          exit 1
+        fi
+        echo "Successfully uploaded ${FILENAME} to Rocket API namespace '${NAMESPACE}'"
